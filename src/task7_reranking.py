@@ -26,30 +26,42 @@ def rerank_cross_encoder(
     Returns:
         List of top_k candidates, re-scored và sorted by rerank_score descending.
     """
-    # TODO: Implement cross-encoder reranking
-    #
-    # Option A: Jina Reranker API
-    # import requests
-    # response = requests.post(
-    #     "https://api.jina.ai/v1/rerank",
-    #     headers={"Authorization": f"Bearer {JINA_API_KEY}"},
-    #     json={
-    #         "model": "jina-reranker-v2-base-multilingual",
-    #         "query": query,
-    #         "documents": [c["content"] for c in candidates],
-    #         "top_n": top_k
-    #     }
-    # )
-    # reranked = response.json()["results"]
-    # return [
-    #     {**candidates[r["index"]], "score": r["relevance_score"]}
-    #     for r in reranked
-    # ]
-    #
-    # Option B: Local model (Qwen3-Reranker)
-    # from transformers import AutoModelForSequenceClassification, AutoTokenizer
-    # ...
-    raise NotImplementedError("Implement rerank_cross_encoder")
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+    if not candidates:
+        return []
+
+    model_name = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    
+    # Load model and tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name, 
+        torch_dtype=torch.float32
+    ).to(device)
+    model.eval()
+
+    # Prepare inputs
+    pairs = [[query, c["content"]] for c in candidates]
+    
+    with torch.no_grad():
+        inputs = tokenizer(pairs, padding=True, truncation=True, return_tensors='pt', max_length=1024).to(device)
+        scores = model(**inputs, return_dict=True).logits.view(-1,).float()
+    
+    scores_list = scores.cpu().tolist()
+    
+    # Update scores
+    reranked_candidates = []
+    for i, c in enumerate(candidates):
+        new_c = c.copy()
+        new_c["score"] = scores_list[i]
+        reranked_candidates.append(new_c)
+
+    # Sort descending and return top_k
+    reranked_candidates.sort(key=lambda x: x["score"], reverse=True)
+    return reranked_candidates[:top_k]
 
 
 def rerank_mmr(
